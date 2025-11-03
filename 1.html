@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 BLE Configurator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        #status {
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            min-height: 50px;
+        }
+        form {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin: 10px 0 5px;
+        }
+        input {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #dhcpButton {
+            background-color: #2196F3;
+        }
+        #dhcpButton:hover {
+            background-color: #1e87db;
+        }
+        #temperature {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin-top: 10px;
+        }
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <h1>ESP32 Temperature Sensor Configurator</h1>
+    
+    <div id="status">Status: Not connected</div>
+    <div id="temperature">Temperature: N/A</div>
+    
+    <button id="connectButton">Connect to Device</button>
+    
+    <form id="dhcpForm" style="display: none;">
+        <button type="button" id="dhcpButton">Switch to DHCP</button>
+    </form>
+    
+    <form id="staticForm" style="display: none;">
+        <h2>Set Static IP</h2>
+        <label for="ip">IP Address:</label>
+        <input type="text" id="ip" placeholder="192.168.1.100" required>
+        
+        <label for="subnet">Subnet Mask:</label>
+        <input type="text" id="subnet" placeholder="255.255.255.0" required>
+        
+        <label for="gateway">Gateway:</label>
+        <input type="text" id="gateway" placeholder="192.168.1.1" required>
+        
+        <label for="dns">DNS:</label>
+        <input type="text" id="dns" placeholder="8.8.8.8" required>
+        
+        <button type="button" id="staticButton">Set Static IP</button>
+    </form>
+
+    <script>
+        const SERVICE_UUID = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
+        const RX_UUID = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E'; // Write
+        const TX_UUID = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E'; // Notify
+
+        let device;
+        let server;
+        let service;
+        let rxCharacteristic;
+        let txCharacteristic;
+
+        const statusDiv = document.getElementById('status');
+        const temperatureDiv = document.getElementById('temperature');
+        const connectButton = document.getElementById('connectButton');
+        const dhcpForm = document.getElementById('dhcpForm');
+        const staticForm = document.getElementById('staticForm');
+        const dhcpButton = document.getElementById('dhcpButton');
+        const staticButton = document.getElementById('staticButton');
+
+        connectButton.addEventListener('click', connectToDevice);
+        dhcpButton.addEventListener('click', sendDhcpCommand);
+        staticButton.addEventListener('click', sendStaticCommand);
+
+        async function connectToDevice() {
+            try {
+                statusDiv.textContent = 'Connecting...';
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'ESP32_Config' }],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                device.addEventListener('gattserverdisconnected', onDisconnected);
+
+                server = await device.gatt.connect();
+                service = await server.getPrimaryService(SERVICE_UUID);
+                rxCharacteristic = await service.getCharacteristic(RX_UUID);
+                txCharacteristic = await service.getCharacteristic(TX_UUID);
+
+                await txCharacteristic.startNotifications();
+                txCharacteristic.addEventListener('characteristicvaluechanged', handleNotification);
+
+                statusDiv.textContent = 'Connected successfully!';
+                connectButton.style.display = 'none';
+                dhcpForm.style.display = 'block';
+                staticForm.style.display = 'block';
+            } catch (error) {
+                statusDiv.textContent = 'Error: ' + error.message;
+                statusDiv.classList.add('error');
+            }
+        }
+
+        function handleNotification(event) {
+            const value = event.target.value;
+            const text = new TextDecoder().decode(value);
+            console.log('Received: ' + text);
+
+            if (text.startsWith('Temp:')) {
+                temperatureDiv.textContent = text;
+            } else {
+                statusDiv.textContent = 'Response: ' + text;
+            }
+        }
+
+        async function sendDhcpCommand() {
+            try {
+                const command = 'dhcp';
+                const encoder = new TextEncoder();
+                await rxCharacteristic.writeValue(encoder.encode(command));
+                statusDiv.textContent = 'DHCP command sent. Device may reboot.';
+            } catch (error) {
+                statusDiv.textContent = 'Error sending DHCP: ' + error.message;
+            }
+        }
+
+        async function sendStaticCommand() {
+            const ip = document.getElementById('ip').value.trim();
+            const subnet = document.getElementById('subnet').value.trim();
+            const gateway = document.getElementById('gateway').value.trim();
+            const dns = document.getElementById('dns').value.trim();
+
+            if (!validateIP(ip) || !validateIP(subnet) || !validateIP(gateway) || !validateIP(dns)) {
+                statusDiv.textContent = 'Error: Invalid IP address format.';
+                return;
+            }
+
+            const command = `static,${ip},${subnet},${gateway},${dns}`;
+            try {
+                const encoder = new TextEncoder();
+                await rxCharacteristic.writeValue(encoder.encode(command));
+                statusDiv.textContent = 'Static IP command sent. Device may reboot.';
+            } catch (error) {
+                statusDiv.textContent = 'Error sending static IP: ' + error.message;
+            }
+        }
+
+        function validateIP(ip) {
+            const parts = ip.split('.');
+            if (parts.length !== 4) return false;
+            return parts.every(part => {
+                const num = parseInt(part);
+                return !isNaN(num) && num >= 0 && num <= 255;
+            });
+        }
+
+        function onDisconnected() {
+            statusDiv.textContent = 'Device disconnected. Click "Connect" to reconnect.';
+            connectButton.style.display = 'block';
+            dhcpForm.style.display = 'none';
+            staticForm.style.display = 'none';
+            temperatureDiv.textContent = 'Temperature: N/A';
+        }
+    </script>
+</body>
+</html>
